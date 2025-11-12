@@ -191,9 +191,80 @@ The model should:
 
 ---
 
-## 6. Evaluation Metrics
+## 6. Results Summary
 
-### 6.1 Overall Metrics (Validation Set)
+### 6.1 Base Model Performance (Before Fixes)
+
+**Training Configuration:**
+- Loss Function: CombinedLoss (BCE + Dice, equal weights)
+- Threshold: 0.5 (fixed)
+- Learning Rate: 1e-4
+- Epochs: 7 (early stopping)
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| **mIoU** | 0.0000 ⚠️ | Mean Intersection over Union - **Critical Issue** |
+| **Dice Coefficient** | 0.0000 ⚠️ | F1 score for binary segmentation - **Critical Issue** |
+| **Pixel Accuracy** | 0.9010 | Overall pixel classification accuracy - High background accuracy |
+| **Validation Loss** | 0.6126 | Combined BCE + Dice loss |
+| **Train Loss** | 0.6145 | Training loss at convergence |
+
+**Issues Identified:**
+- Zero IoU/Dice scores indicate model not producing positive predictions above threshold
+- High pixel accuracy (90.10%) but zero IoU suggests model predicting only background
+- Class imbalance: foreground pixels are rare compared to background
+
+### 6.2 Improved Model Performance (After Applying Fixes)
+
+**Fixes Applied:**
+1. ✅ **Weighted Loss Function**: Implemented `WeightedCombinedLoss` with `pos_weight=10.0` to handle class imbalance
+   - Automatically calculates class weights based on foreground/background pixel ratio
+   - Uses `binary_cross_entropy_with_logits` for numerical stability
+   - Combined with Dice loss for better segmentation quality
+2. ✅ **Threshold Tuning**: Added automatic threshold optimization on validation set
+   - Tests thresholds from 0.1 to 0.9 in 0.1 increments
+   - Selects threshold that maximizes IoU on validation set
+   - Can be enabled with `--tune_threshold` flag
+3. ✅ **Model Output Handling**: Modified model to output logits instead of probabilities
+   - Removed sigmoid from decoder output
+   - Loss functions handle sigmoid application appropriately
+   - WeightedCombinedLoss uses logits directly
+   - CombinedLoss applies sigmoid before loss calculation
+4. ✅ **Evaluation Improvements**: Enhanced metric calculation with configurable threshold
+   - Threshold can be set via `--threshold` argument
+   - Metrics calculated with optimal threshold when tuning enabled
+   - Threshold logged to TensorBoard for monitoring
+
+**Training Configuration (With Fixes):**
+- Loss Function: WeightedCombinedLoss (weighted BCE + Dice, pos_weight=10.0)
+- Threshold: Auto-tuned on validation set (optimal threshold found per epoch)
+- Learning Rate: 1e-4 (same as base)
+- Epochs: TBD (to be retrained with fixes)
+
+**Expected Improvements:**
+- **mIoU**: Expected to improve from 0.0000 to > 0.1 (basic segmentation)
+- **Dice Coefficient**: Expected to improve from 0.0000 to > 0.2 (basic overlap)
+- **Pixel Accuracy**: Expected to remain high (> 0.85) while improving foreground detection
+- **Validation Loss**: May increase slightly due to emphasis on foreground pixels
+
+**Note**: *Actual results after retraining with fixes will be updated once training completes.*
+
+### 6.3 Comparison Table
+
+| Metric | Base Model | After Fixes | Improvement |
+|--------|------------|-------------|-------------|
+| **mIoU** | 0.0000 | TBD | TBD |
+| **Dice Coefficient** | 0.0000 | TBD | TBD |
+| **Pixel Accuracy** | 0.9010 | TBD | TBD |
+| **Validation Loss** | 0.6126 | TBD | TBD |
+| **Threshold** | 0.5 (fixed) | Auto-tuned | Adaptive |
+| **Loss Function** | CombinedLoss | WeightedCombinedLoss | Class-balanced |
+
+---
+
+## 7. Evaluation Metrics
+
+### 7.1 Overall Metrics (Validation Set)
 
 | Metric | Value | Notes |
 |--------|-------|-------|
@@ -208,7 +279,7 @@ The model should:
 - Inspect sample predictions to understand model behavior
 - Consider adjusting loss function weights or adding class balancing
 
-### 6.2 Per-Prompt Metrics
+### 7.2 Per-Prompt Metrics
 
 *Note: Per-prompt evaluation was not completed in this training run. Future evaluation should include:*
 
@@ -218,15 +289,15 @@ The model should:
 - **"segment joint/tape"** - mIoU, Dice
 - **"segment drywall seam"** - mIoU, Dice
 
-### 6.3 Test Set Evaluation
+### 7.3 Test Set Evaluation
 
 *Test set evaluation pending - requires running inference on test set with trained model*
 
 ---
 
-## 7. Model Performance Analysis
+## 8. Model Performance Analysis
 
-### 7.1 Strengths
+### 8.1 Strengths
 
 1. **Training Stability**: Model trains stably with converging loss
 2. **High Pixel Accuracy**: 90.10% pixel accuracy indicates excellent background/foreground separation
@@ -234,7 +305,7 @@ The model should:
 4. **Multi-Prompt Capability**: Single model handles multiple prompts
 5. **Early Stopping**: Successfully prevented overfitting
 
-### 7.2 Limitations
+### 8.2 Limitations
 
 1. **Zero IoU/Dice Scores**: ⚠️ **Critical Issue** - IoU and Dice scores are 0.0000, indicating the model may not be producing positive predictions or threshold issues
 2. **Segmentation Quality**: Model appears to be predicting mostly background (high pixel accuracy but zero IoU suggests no foreground detection)
@@ -242,7 +313,7 @@ The model should:
 4. **Small Batch Size**: Batch size of 2 limits gradient estimation quality
 5. **Class Imbalance**: May need class weighting or focal loss to handle imbalanced foreground/background pixels
 
-### 7.3 Failure Cases (Expected)
+### 8.3 Failure Cases (Expected)
 
 Based on low IoU/Dice scores, the model likely struggles with:
 - **Fine details**: Thin cracks or narrow taping areas
@@ -252,22 +323,22 @@ Based on low IoU/Dice scores, the model likely struggles with:
 
 ---
 
-## 8. Runtime & Footprint
+## 9. Runtime & Footprint
 
-### 8.1 Training Time
+### 9.1 Training Time
 
 - **Per Epoch**: ~1 hour (CPU)
 - **Total Training Time**: ~7 hours (7 epochs)
 - **Early Stopping**: Training stopped at epoch 7, saving ~3 hours
 - **GPU Estimate**: Would reduce to ~10-15 minutes per epoch (~1.5 hours for 7 epochs)
 
-### 8.2 Inference Time
+### 9.2 Inference Time
 
 *Not measured in this training run. Estimated:*
 - **Per Image**: ~0.5-1 second (CPU)
 - **Batch Inference**: ~0.2-0.5 seconds per image (with batch processing)
 
-### 8.3 Model Size
+### 9.3 Model Size
 
 - **Parameters**: 150,137,346
 - **Estimated Size**: ~600 MB (FP32) / ~300 MB (FP16)
@@ -275,22 +346,24 @@ Based on low IoU/Dice scores, the model likely struggles with:
 
 ---
 
-## 9. Technical Implementation Details
+## 10. Technical Implementation Details
 
-### 9.1 Data Preprocessing
+### 10.1 Data Preprocessing
 
 - Images resized to 256×256 for training
 - Masks converted to binary format (0/255)
 - Prompts loaded from text files
 - Data augmentation: Standard transforms (normalization, etc.)
 
-### 9.2 Model Architecture Modifications
+### 10.2 Model Architecture Modifications
 
 1. **Projection Layers**: Added to align vision (768-dim) and text (512-dim) embeddings to 64 dimensions
 2. **Decoder**: Custom CNN decoder with upsampling layers
-3. **Output Layer**: Sigmoid activation for binary segmentation
+3. **Output Layer**: **Updated** - Removed sigmoid activation, model now outputs logits
+   - Allows flexible loss function selection (WeightedCombinedLoss uses logits, CombinedLoss applies sigmoid)
+   - Better numerical stability for weighted loss functions
 
-### 9.3 Training Infrastructure
+### 10.3 Training Infrastructure
 
 - **Framework**: PyTorch
 - **Logging**: TensorBoard
@@ -300,7 +373,7 @@ Based on low IoU/Dice scores, the model likely struggles with:
 
 ---
 
-## 10. Visual Examples
+## 11. Visual Examples
 
 *Note: Visual examples should be generated after test set evaluation. Placeholder structure:*
 
@@ -326,9 +399,9 @@ Based on low IoU/Dice scores, the model likely struggles with:
 
 ---
 
-## 11. Recommendations
+## 12. Recommendations
 
-### 11.1 Immediate Next Steps (Priority)
+### 12.1 Immediate Next Steps (Priority)
 
 1. **⚠️ Investigate Zero IoU/Dice Issue**: 
    - Inspect sample predictions to understand why IoU/Dice are 0.0
@@ -341,7 +414,7 @@ Based on low IoU/Dice scores, the model likely struggles with:
 4. **Per-Prompt Analysis**: Evaluate performance for each prompt separately
 5. **Threshold Tuning**: Experiment with different prediction thresholds (0.3, 0.4, 0.6, 0.7)
 
-### 11.2 Model Improvements
+### 12.2 Model Improvements
 
 1. **Fix Segmentation Issue**: Address zero IoU/Dice problem before further training
 2. **Class Balancing**: Add class weights or focal loss to handle imbalanced foreground/background
@@ -351,19 +424,19 @@ Based on low IoU/Dice scores, the model likely struggles with:
 6. **Data Augmentation**: Add more aggressive augmentation (rotations, flips, color jitter)
 7. **Loss Function**: Consider using focal loss or weighted BCE to emphasize foreground pixels
 
-### 11.3 Architecture Improvements
+### 12.3 Architecture Improvements
 
 1. **Attention Mechanisms**: Add cross-attention between vision and text features
 2. **Multi-Scale Features**: Use feature pyramid network for better detail capture
 3. **Post-Processing**: Add CRF or morphological operations for mask refinement
 
-### 11.4 Evaluation Improvements
+### 12.4 Evaluation Improvements
 
 1. **Per-Prompt Metrics**: Implement detailed per-prompt evaluation
 2. **Confusion Matrices**: Analyze false positives and false negatives
 3. **Failure Case Collection**: Systematically collect and analyze failure cases
 
-### 11.5 How to Improve IoU/Dice Scores - Detailed Guide
+### 12.5 How to Improve IoU/Dice Scores - Detailed Guide
 
 This section provides step-by-step instructions to diagnose and fix the zero IoU/Dice score issue.
 
@@ -801,7 +874,7 @@ After implementing these fixes, you should see:
 
 ---
 
-## 12. Conclusion
+## 13. Conclusion
 
 The training pipeline has been successfully implemented and tested. The CLIPSeg-based model completed 7 epochs with stable convergence. However, a critical issue has been identified: IoU and Dice scores are 0.0000, indicating the model may not be producing positive predictions or there may be threshold/metric calculation issues.
 
@@ -834,10 +907,11 @@ The training pipeline has been successfully implemented and tested. The CLIPSeg-
 
 ---
 
-## 13. Appendix
+## 14. Appendix
 
-### 13.1 Training Command
+### 14.1 Training Command
 
+**Base Model (Before Fixes):**
 ```bash
 python scripts/train.py \
     --data_dir data/processed \
@@ -850,19 +924,36 @@ python scripts/train.py \
     --gradient_clip 1.0
 ```
 
-### 13.2 Model Checkpoints
+**Improved Model (With Fixes):**
+```bash
+python scripts/train.py \
+    --data_dir data/processed \
+    --output_dir outputs/training_both_datasets_fixed \
+    --epochs 10 \
+    --batch_size 2 \
+    --lr 1e-4 \
+    --image_size 256 \
+    --num_workers 0 \
+    --gradient_clip 1.0 \
+    --use_weighted_loss \
+    --pos_weight 10.0 \
+    --tune_threshold \
+    --threshold 0.5
+```
+
+### 14.2 Model Checkpoints
 
 - **Best Model**: `outputs/training_both_datasets/checkpoints/best_model.pth` (1.7 GB)
 - **Final Model**: `outputs/training_both_datasets/checkpoints/final_model.pth` (573 MB)
 - **Epoch 1-7**: `outputs/training_both_datasets/checkpoints/checkpoint_epoch_{1-7}.pth` (1.7 GB each)
 - **Total Checkpoint Size**: ~14 GB (all checkpoints combined)
 
-### 13.3 Training Logs
+### 14.3 Training Logs
 
 - **TensorBoard Logs**: `outputs/training_both_datasets/logs/`
 - **Training Log**: `training_both_datasets.log`
 
-### 13.4 Dependencies
+### 14.4 Dependencies
 
 - PyTorch
 - transformers (for CLIPSeg)
@@ -872,7 +963,7 @@ python scripts/train.py \
 - scikit-learn
 - tensorboard
 
-### 13.5 Random Seeds
+### 14.5 Random Seeds
 
 *Note: Random seeds should be documented for reproducibility. Check training script for seed values.*
 

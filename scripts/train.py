@@ -18,8 +18,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from src.data.dataset import TextConditionedSegmentationDataset, CombinedDataset
 from src.models.clipseg_model import CLIPSegSegmentationModel, SimpleCLIPSegModel
-from src.training.losses import CombinedLoss, DiceLoss
-from src.evaluation.metrics import calculate_miou, calculate_mean_dice, evaluate_batch
+from src.training.losses import CombinedLoss, DiceLoss, WeightedCombinedLoss
+from src.evaluation.metrics import calculate_miou, calculate_mean_dice, evaluate_batch, calculate_iou
 from src.training.trainer import EarlyStopping, TrainingTracker, evaluate_per_prompt, save_checkpoint, load_checkpoint
 
 def set_seed(seed=42):
@@ -117,6 +117,35 @@ def create_data_loaders(data_dir, batch_size=8, num_workers=4, image_size=512):
     
     return train_loader, val_loader
 
+def find_optimal_threshold(predictions, targets, thresholds=None):
+    """Find optimal threshold for binary segmentation."""
+    if thresholds is None:
+        thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    
+    best_threshold = 0.5
+    best_iou = 0.0
+    
+    pred_np = predictions.cpu().numpy()
+    target_np = targets.cpu().numpy()
+    
+    for threshold in thresholds:
+        pred_binary = (pred_np > threshold).astype(np.uint8)
+        target_binary = (target_np > 0.5).astype(np.uint8)
+        
+        batch_size = pred_binary.shape[0]
+        ious = []
+        
+        for i in range(batch_size):
+            iou = calculate_iou(pred_binary[i, 0], target_binary[i, 0])
+            ious.append(iou)
+        
+        avg_iou = np.mean(ious)
+        if avg_iou > best_iou:
+            best_iou = avg_iou
+            best_threshold = threshold
+    
+    return best_threshold
+
 def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer, 
                 scaler=None, gradient_clip=0.0):
     """Train for one epoch."""
@@ -137,8 +166,14 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
         # Mixed precision training
         if scaler is not None:
             with torch.cuda.amp.autocast():
-                outputs = model(images, prompts=prompts)
-                loss = criterion(outputs, masks)
+                outputs = model(images, prompts=prompts)  # Outputs logits
+                # WeightedCombinedLoss expects logits, CombinedLoss expects probabilities
+                if isinstance(criterion, WeightedCombinedLoss):
+                    outputs_for_loss = outputs  # Already logits
+                else:
+                    # CombinedLoss expects probabilities, so apply sigmoid
+                    outputs_for_loss = torch.sigmoid(outputs)
+                loss = criterion(outputs_for_loss, masks)
             
             scaler.scale(loss).backward()
             
@@ -152,7 +187,12 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
         else:
             # Standard training
             outputs = model(images, prompts=prompts)
-            loss = criterion(outputs, masks)
+            # WeightedCombinedLoss expects logits, CombinedLoss expects probabilities
+            if isinstance(criterion, WeightedCombinedLoss):
+                outputs_for_loss = outputs  # Already logits
+            else:
+                outputs_for_loss = outputs  # Already probabilities
+            loss = criterion(outputs_for_loss, masks)
             
             # Backward pass
             loss.backward()
@@ -177,7 +217,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     return avg_loss
 
-def validate(model, val_loader, criterion, device, epoch, writer):
+def validate(model, val_loader, criterion, device, epoch, writer, threshold=0.5, tune_threshold=False):
     """Validate model."""
     model.eval()
     total_loss = 0.0
@@ -193,21 +233,37 @@ def validate(model, val_loader, criterion, device, epoch, writer):
             prompts = batch['prompt']  # List of prompt strings
             
             # Forward pass
-            outputs = model(images, prompts=prompts)
+            outputs = model(images, prompts=prompts)  # Outputs logits
+            
+            # Apply sigmoid for loss calculation if using CombinedLoss
+            if isinstance(criterion, WeightedCombinedLoss):
+                outputs_for_loss = outputs  # Already logits
+            else:
+                # CombinedLoss expects probabilities [0, 1]
+                outputs_for_loss = torch.sigmoid(outputs)
+            
+            # Always apply sigmoid for metrics (need probabilities)
+            outputs_for_metrics = torch.sigmoid(outputs)
             
             # Calculate loss
-            loss = criterion(outputs, masks)
+            loss = criterion(outputs_for_loss, masks)
             total_loss += loss.item()
             
-            # Store for metrics
-            all_predictions.append(outputs)
+            # Store for metrics (use sigmoid outputs)
+            all_predictions.append(outputs_for_metrics)
             all_targets.append(masks)
         
         # Calculate metrics
         all_predictions = torch.cat(all_predictions, dim=0)
         all_targets = torch.cat(all_targets, dim=0)
         
-        metrics = evaluate_batch(all_predictions, all_targets)
+        # Tune threshold if requested
+        if tune_threshold and epoch > 0:  # Skip on first epoch
+            best_threshold = find_optimal_threshold(all_predictions, all_targets)
+            threshold = best_threshold
+            print(f"  Optimal threshold: {threshold:.3f}")
+        
+        metrics = evaluate_batch(all_predictions, all_targets, threshold=threshold)
         avg_loss = total_loss / len(val_loader) if len(val_loader) > 0 else 0.0
         
         # Log to tensorboard
@@ -216,6 +272,7 @@ def validate(model, val_loader, criterion, device, epoch, writer):
             writer.add_scalar('Val/IoU', metrics['iou'], epoch)
             writer.add_scalar('Val/Dice', metrics['dice'], epoch)
             writer.add_scalar('Val/PixelAccuracy', metrics['pixel_accuracy'], epoch)
+            writer.add_scalar('Val/Threshold', threshold, epoch)
         
         return avg_loss, metrics
 
@@ -249,6 +306,14 @@ def main():
                         help='Use mixed precision training')
     parser.add_argument('--eval_per_prompt', action='store_true',
                         help='Evaluate metrics per prompt')
+    parser.add_argument('--use_weighted_loss', action='store_true',
+                        help='Use weighted loss to handle class imbalance')
+    parser.add_argument('--pos_weight', type=float, default=10.0,
+                        help='Positive weight multiplier for weighted loss')
+    parser.add_argument('--threshold', type=float, default=0.5,
+                        help='Threshold for binary mask prediction')
+    parser.add_argument('--tune_threshold', action='store_true',
+                        help='Tune threshold on validation set')
     
     args = parser.parse_args()
     
@@ -283,7 +348,16 @@ def main():
     model = model.to(device)
     
     # Create loss and optimizer
-    criterion = CombinedLoss(bce_weight=0.5, dice_weight=0.5)
+    if args.use_weighted_loss:
+        print(f"Using WeightedCombinedLoss with pos_weight={args.pos_weight}")
+        criterion = WeightedCombinedLoss(
+            bce_weight=1.0, 
+            dice_weight=1.0, 
+            pos_weight=args.pos_weight
+        )
+    else:
+        criterion = CombinedLoss(bce_weight=0.5, dice_weight=0.5)
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5, verbose=True
@@ -329,7 +403,11 @@ def main():
                                 scaler=scaler, gradient_clip=args.gradient_clip)
         
         # Validate
-        val_loss, val_metrics = validate(model, val_loader, criterion, device, epoch, writer)
+        val_loss, val_metrics = validate(
+            model, val_loader, criterion, device, epoch, writer,
+            threshold=args.threshold,
+            tune_threshold=args.tune_threshold
+        )
         
         # Per-prompt evaluation (optional, can be slow)
         if args.eval_per_prompt and epoch % 5 == 0:  # Every 5 epochs

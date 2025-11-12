@@ -1,0 +1,19 @@
+{
+  "base_threshold_0.5": {
+    "threshold": 0.5,
+    "iou": 0.00331899333421201,
+    "dice": 0.006441534739104755,
+    "pixel_accuracy": 0.8895360043174342
+  },
+  "optimal_threshold": {
+    "threshold": 0.1,
+    "iou": 0.09899518643206323,
+    "dice": 0.16296567607485443,
+    "pixel_accuracy": 0.09899518643206323
+  },
+  "improvement": {
+    "iou_improvement": 0.09567619309785122,
+    "dice_improvement": 0.15652414133574968,
+    "pixel_acc_change": -0.790540817885371
+  }
+}

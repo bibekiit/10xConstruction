@@ -142,8 +142,8 @@ class SimpleCLIPSegModel(nn.Module):
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(128, 64, 3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 1, 1),
-            nn.Sigmoid()
+            nn.Conv2d(64, 1, 1)
+            # Note: Sigmoid removed - apply in loss function or post-processing
         )
     
     def forward(self, images, prompts=None, input_ids=None, attention_mask=None):
@@ -317,6 +317,8 @@ class SimpleCLIPSegModel(nn.Module):
             mask = nn.functional.interpolate(
                 mask, size=original_size, mode='bilinear', align_corners=False
             )
-        
+
+        # Return logits (no sigmoid) - let loss function handle sigmoid
+        # For evaluation/metrics, apply sigmoid externally
         return mask
 
