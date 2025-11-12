@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Data files (too large for git)
+data/raw/
+data/processed/
+data/test_dataset/
+
+# Model outputs and checkpoints
+outputs/
+models/
+*.pth
+*.pt
+*.ckpt
+
+# Logs
+*.log
+training_*.log
+*.txt.log
+
+# TensorBoard logs
+logs/
+*.tfevents.*
+
+# Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
